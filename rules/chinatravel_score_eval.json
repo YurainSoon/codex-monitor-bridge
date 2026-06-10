@@ -1,0 +1,11 @@
+{
+  "rules": [
+    {
+      "type": "oom",
+      "kind": "regex",
+      "source": "tail",
+      "regex": "OOM_DETECTED|CUDA out of memory|OutOfMemoryError|RuntimeError:.*out of memory|Out of memory",
+      "message": "ChinaTravel scoring appears to have hit an out-of-memory error."
+    }
+  ]
+}

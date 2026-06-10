@@ -1,0 +1,344 @@
+# Codex Monitor Bridge
+
+Wake a specific Codex session when a long-running remote job reaches a
+configured event, such as progress, OOM, or completion.
+
+This package is useful when you want Codex to stop actively waiting, let you
+continue working, and then receive an automatic message later when a background
+monitor fires.
+
+## What It Does
+
+The flow is:
+
+1. A remote command runs with `nohup`, or you attach to an existing remote PID.
+2. A local daemon checks the remote PID and log at an interval.
+3. When a rule matches, the daemon emits an event.
+4. The bridge sends that event into a target Codex session through app-server
+   remote control.
+5. Codex wakes up and handles the event using the prompt template for that
+   event type.
+
+Important: this wakeup arrives as a Codex user message, not as a tool result.
+Codex currently exposes `turn/start` for this kind of external wakeup, and that
+API accepts user input. Tool results normally require Codex to have called a
+tool first.
+
+## Requirements
+
+- Node.js 18+
+- SSH access to the remote machine
+- Standalone Codex CLI with app-server remote control
+
+Check Codex:
+
+```bash
+codex --version
+```
+
+Bootstrap and start app-server remote control:
+
+```bash
+codex app-server daemon bootstrap --remote-control
+codex app-server daemon start
+codex app-server daemon version
+```
+
+The socket should exist:
+
+```bash
+ls -la ~/.codex/app-server-control/app-server-control.sock
+```
+
+## Files
+
+```text
+codex-monitor-bridge/
+  bin/
+    codex_remote_monitor_daemon.mjs
+    codex_app_server_event_bridge.mjs
+  prompts/
+    progress.md
+    oom.md
+    done.md
+  rules/
+    rules_with_oom.json
+  README.md
+```
+
+Runtime state is written under:
+
+```text
+codex-monitor-bridge/.codex-monitor/
+```
+
+Do not include `.codex-monitor/` when sharing the package. It contains local
+runtime state, job logs, bridge responses, and sometimes SSHFS temporary files.
+
+## Quick Start: Monitor An Existing Remote PID
+
+Start your remote job however you normally do, making sure it writes an
+unbuffered log:
+
+```bash
+ssh 3090 '
+cd /path/to/project
+source /conda/etc/profile.d/conda.sh
+conda activate kg
+nohup python -u train.py > /path/to/project/train.log 2>&1 &
+echo $!
+'
+```
+
+Then attach the monitor:
+
+```bash
+cd codex-monitor-bridge
+
+node bin/codex_remote_monitor_daemon.mjs watch-existing \
+  --host 3090 \
+  --pid <REMOTE_PID> \
+  --remote-dir /path/to/project \
+  --remote-log /path/to/project/train.log \
+  --interval-sec 30 \
+  --bridge-app-server \
+  --app-server-thread-id "$CODEX_THREAD_ID" \
+  --rules-file rules/rules_with_oom.json \
+  --app-server-prompt-template-dir prompts
+```
+
+`CODEX_THREAD_ID` is available inside a Codex session. If you run this from a
+normal terminal, copy the target thread id from the Codex session context or
+pass it explicitly.
+
+## Quick Start: Launch And Monitor A Remote Command
+
+You can also let the daemon launch the command:
+
+```bash
+cd codex-monitor-bridge
+
+node bin/codex_remote_monitor_daemon.mjs launch-remote \
+  --host 3090 \
+  --remote-dir /path/to/project \
+  --remote-log /path/to/project/train.log \
+  --command 'source /conda/etc/profile.d/conda.sh && conda activate kg && python -u train.py' \
+  --interval-sec 30 \
+  --bridge-app-server \
+  --app-server-thread-id "$CODEX_THREAD_ID" \
+  --rules-file rules/rules_with_oom.json \
+  --app-server-prompt-template-dir prompts
+```
+
+The remote command is wrapped in `nohup bash -lc ...` and the monitor returns
+immediately with a local job id, local daemon PID, remote PID, and remote log
+path.
+
+## Event Rules
+
+Rules decide when an event fires. Each event type fires once per job.
+
+Example:
+
+```json
+{
+  "rules": [
+    {
+      "type": "progress",
+      "kind": "progressIndex",
+      "index": 8,
+      "total": 10,
+      "message": "Run reached process [8/10]; it is close to finishing."
+    },
+    {
+      "type": "oom",
+      "kind": "regex",
+      "source": "tail",
+      "regex": "CUDA out of memory|OutOfMemoryError|RuntimeError:.*out of memory|Out of memory",
+      "message": "The remote run appears to have hit an out-of-memory error."
+    }
+  ]
+}
+```
+
+Supported rule kinds:
+
+- `progressIndex`: matches log lines like `Process [8/10]`
+- `regex`: matches a regular expression against either `tail` or
+  `processLines`
+
+The monitor always emits `done` when the remote PID exits.
+
+For a quick OOM rule without a rules file:
+
+```bash
+--oom-regex 'CUDA out of memory|OutOfMemoryError|RuntimeError:.*out of memory'
+```
+
+## Prompt Templates
+
+Events and prompts are separate:
+
+- event: structured facts, such as `type=oom`, `pid`, `remoteLog`, and log tail
+- prompt: the instruction sent to Codex for that event
+
+With:
+
+```bash
+--app-server-prompt-template-dir prompts
+```
+
+the bridge looks for:
+
+```text
+prompts/<event-type>.md
+prompts/default.md
+```
+
+So an OOM event uses `prompts/oom.md`, a completion event uses
+`prompts/done.md`, and a progress event uses `prompts/progress.md`.
+
+Useful placeholders:
+
+```text
+{{event_json}}       compact event JSON with long fields truncated
+{{event_json_full}}  original event JSON; avoid this for large logs
+{{event.type}}       any event field by dot path
+{{message}}          top-level event message
+{{tail}}             captured remote log tail, truncated by the bridge
+{{remoteLog}}        remote log path
+```
+
+Example `prompts/oom.md`:
+
+````markdown
+后台监控检测到疑似 OOM。
+
+请检查日志，并优先通过降低 batch size、gradient accumulation、序列长度或
+worker 数来避免 OOM。不要改动和 OOM 无关的实验逻辑。
+
+事件信息：
+
+```json
+{{event_json}}
+```
+````
+
+## Prompt Size And Context Safety
+
+Monitor messages should be small. Prefer sending identifiers and artifact paths,
+then let Codex inspect the files after it wakes up.
+
+The bridge now protects the target Codex thread in three ways:
+
+- `{{event_json}}`, `{{tail}}`, and `{{event.tail}}` use a compact event object.
+  Long strings are truncated before they enter the prompt.
+- The full prompt is capped by `--max-prompt-chars` so an accidental verbose
+  template cannot flood the context window.
+- If app-server reports `contextWindowExceeded`, the bridge requests
+  `thread/compact/start` on the target thread and retries the event once.
+
+Useful size controls:
+
+```bash
+--app-server-max-tail-chars 1200
+--app-server-max-process-lines-chars 1200
+--app-server-max-prompt-chars 8000
+```
+
+`--app-server-compact-before-turn` is available when you intentionally want to
+compact before every monitor event. In normal use, leave it off and rely on the
+automatic compact-and-retry path after `contextWindowExceeded`.
+
+For scoring or evaluation jobs, avoid monitoring a huge master log as the event
+payload. Use `--remote-log` for the main progress log and `--remote-event-log`
+for a short scoring log or summary log; the daemon uses the short event log for
+the event tail. A completion prompt should usually mention only fields such as
+`jobId`, `pid`, `remoteLog`, `remoteEventLog`, `scorePath`, and `summaryPath`,
+not a full log tail.
+
+## Inspect Jobs
+
+```bash
+node bin/codex_remote_monitor_daemon.mjs list
+node bin/codex_remote_monitor_daemon.mjs status --job <JOB_ID>
+node bin/codex_remote_monitor_daemon.mjs events --job <JOB_ID> --lines 5
+```
+
+Bridge delivery records:
+
+```text
+.codex-monitor/app-server-responses.jsonl
+.codex-monitor/app-server-responses/<timestamp>-<job>-<event>.json
+.codex-monitor/app-server-failures.jsonl
+```
+
+Cancel only the local monitor:
+
+```bash
+node bin/codex_remote_monitor_daemon.mjs cancel --job <JOB_ID>
+```
+
+Cancel the local monitor and also kill the remote process:
+
+```bash
+node bin/codex_remote_monitor_daemon.mjs cancel --job <JOB_ID> --kill-remote
+```
+
+## Dry Run A Prompt
+
+Preview the prompt for an event without sending it to Codex:
+
+```bash
+node bin/codex_app_server_event_bridge.mjs \
+  --dry-run \
+  --prompt-template-dir prompts \
+  --event-json '{"jobId":"demo","type":"oom","message":"OOM","tail":"CUDA out of memory"}'
+```
+
+## Troubleshooting
+
+If delivery fails with a missing socket, start app-server remote control:
+
+```bash
+codex app-server daemon bootstrap --remote-control
+codex app-server daemon start
+```
+
+If a message appears in a separate detached thread, you are probably using
+`--app-server-transport stdio`. For a real current-session wakeup, use the
+default `proxy` transport and pass:
+
+```bash
+--app-server-thread-id <THREAD_ID>
+```
+
+If the remote job finishes but Codex is not notified, check:
+
+```bash
+node bin/codex_remote_monitor_daemon.mjs status --job <JOB_ID>
+tail -50 .codex-monitor/<JOB_ID>.daemon.log
+tail -50 .codex-monitor/app-server-bridge.log
+```
+
+If `app-server-bridge.log` contains `contextWindowExceeded`, the bridge should
+compact the target thread and retry once. If the retry still fails, the event is
+recorded under:
+
+```text
+.codex-monitor/app-server-failures.jsonl
+.codex-monitor/app-server-responses/<timestamp>-<job>-<event>.failed.json
+```
+
+An empty assistant response is also treated as delivery failure, because it can
+mean app-server rejected the input before Codex produced a real turn.
+
+## Design Notes
+
+This package deliberately keeps monitoring outside the active Codex turn. The
+daemon is a normal local background process. It polls the remote log/PID, and
+only contacts Codex when an event fires.
+
+That means Codex is free between events, and the user can keep chatting or work
+in other sessions. When the monitor event fires, Codex receives a new turn in
+the specified session.

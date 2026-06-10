@@ -1,0 +1,18 @@
+{
+  "rules": [
+    {
+      "type": "progress",
+      "kind": "progressIndex",
+      "index": 8,
+      "total": 10,
+      "message": "Remote run reached process [8/10]; it is close to finishing."
+    },
+    {
+      "type": "oom",
+      "kind": "regex",
+      "source": "tail",
+      "regex": "CUDA out of memory|OutOfMemoryError|RuntimeError:.*out of memory|Out of memory",
+      "message": "The remote run appears to have hit an out-of-memory error."
+    }
+  ]
+}
