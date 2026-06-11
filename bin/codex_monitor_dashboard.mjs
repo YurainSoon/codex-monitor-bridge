@@ -338,7 +338,7 @@ function statusForJob({ job, state, daemonRunning, eventStatuses }) {
 
   if (state.cancelled) {
     return {
-      label: "监控已取消",
+      label: "取消",
       tone: "muted",
       detail: "本地监控已经被取消，不会再触发新的提醒。",
     };
@@ -347,28 +347,28 @@ function statusForJob({ job, state, daemonRunning, eventStatuses }) {
   if (done?.triggered) {
     if (done.delivery?.state === "delivered") {
       return {
-        label: "已完成，通知成功",
+        label: "完成",
         tone: "good",
-        detail: "远端任务已结束，Codex 已接收通知。",
+        detail: "后台已写入",
       };
     }
     if (done.delivery?.state === "failed") {
       return {
-        label: "已完成，通知失败",
+        label: "异常",
         tone: "bad",
         detail: done.delivery.reason || "远端任务已结束，但 Codex 没有成功接收通知。",
       };
     }
     if (hasAppServerBridge(job)) {
       return {
-        label: "已完成，通知中",
+        label: "留意",
         tone: "warn",
         detail: "远端任务已结束，正在等待通知结果。",
       };
     }
     return {
-      label: "已完成",
-      tone: "muted",
+      label: "完成",
+      tone: "good",
       detail: "远端任务已结束。",
     };
   }
@@ -376,28 +376,28 @@ function statusForJob({ job, state, daemonRunning, eventStatuses }) {
   if (daemonRunning) {
     if (lastPollAge != null && lastPollAge > staleAfter) {
       return {
-        label: "监控进程存在，但轮询停滞",
+        label: "留意",
         tone: "warn",
         detail: "本地 daemon 仍在，但最后一次轮询时间偏久，建议查看 daemon 日志。",
       };
     }
     return {
-      label: "运行中",
-      tone: "good",
+      label: "运行",
+      tone: "running",
       detail: "本地 daemon 正在轮询远端 PID 和日志。",
     };
   }
 
   if (state.lastPollAt) {
     return {
-      label: "监控进程已停止，远端任务状态未知",
+      label: "异常",
       tone: "bad",
       detail: "没有看到完成事件，本地 daemon 也不在运行。远端任务可能仍在运行，也可能已经结束但没有触发提醒。",
     };
   }
 
   return {
-    label: "已创建，尚未开始轮询",
+    label: "等待",
     tone: "warn",
     detail: "监控任务文件已经存在，但还没有轮询记录。",
   };
@@ -523,7 +523,7 @@ function progressDisplayForJob(job, completed) {
     return {
       state: "complete",
       percent: 100,
-      label: "任务已完成",
+      label: "完成",
       detail: "",
     };
   }
@@ -543,8 +543,8 @@ function progressDisplayForJob(job, completed) {
   return {
     state: job.daemonRunning ? "waiting" : "unknown",
     percent: 0,
-    label: job.daemonRunning ? "等待进度行" : "暂无进度行",
-    detail: job.daemonRunning ? "本地监控正在运行，但还没有解析到 Process 进度。" : "没有可解析的 Process 进度行。",
+    label: "",
+    detail: "",
   };
 }
 
@@ -678,66 +678,71 @@ function dashboardHtml() {
   <title>Codex Monitor Bridge</title>
   <style>
     :root {
-      color-scheme: light;
-      --bg: #f6f7f9;
-      --panel: #ffffff;
-      --text: #1f2933;
-      --muted: #667085;
-      --line: #d7dde5;
-      --good: #16794c;
-      --good-bg: #e8f6ee;
-      --warn: #9a5a00;
-      --warn-bg: #fff3d8;
-      --bad: #b42318;
-      --bad-bg: #fee9e7;
-      --info: #245b9a;
-      --info-bg: #e8f1fb;
-      --soft: #eef1f5;
+      color-scheme: dark;
+      --bg: #1e2030;
+      --bg-deep: #181926;
+      --panel: #24273a;
+      --panel-2: #2b2f45;
+      --text: #cad3f5;
+      --muted: #a5adcb;
+      --quiet: #7f849c;
+      --line: #363a4f;
+      --line-strong: #494d64;
+      --good: #a6da95;
+      --good-bg: rgba(166, 218, 149, 0.12);
+      --running: #eed49f;
+      --running-bg: rgba(238, 212, 159, 0.12);
+      --warn: #eed49f;
+      --warn-bg: rgba(238, 212, 159, 0.12);
+      --bad: #ed8796;
+      --bad-bg: rgba(237, 135, 150, 0.13);
+      --info: #8aadf4;
+      --info-bg: rgba(138, 173, 244, 0.12);
+      --soft: #303446;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      background: var(--bg);
+      background: var(--bg-deep);
       color: var(--text);
       letter-spacing: 0;
     }
     header {
       border-bottom: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.92);
+      background: rgba(30, 32, 48, 0.94);
       position: sticky;
       top: 0;
       z-index: 10;
-      backdrop-filter: blur(10px);
+      backdrop-filter: blur(12px);
     }
     .wrap {
-      width: min(1480px, calc(100% - 40px));
+      width: min(980px, calc(100% - 24px));
       margin: 0 auto;
     }
     .topbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 20px;
-      padding: 18px 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 10px;
+      padding: 12px 0;
     }
     h1 {
-      font-size: 20px;
+      font-size: 15px;
       line-height: 1.2;
       margin: 0;
       font-weight: 720;
     }
     .subtitle {
       color: var(--muted);
-      font-size: 13px;
-      margin-top: 4px;
+      font-size: 12px;
+      margin-top: 3px;
     }
     .toolbar {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
       flex-wrap: wrap;
-      justify-content: flex-end;
+      justify-content: flex-start;
     }
     .segmented {
       display: inline-flex;
@@ -745,124 +750,146 @@ function dashboardHtml() {
       gap: 2px;
       padding: 2px;
       border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--soft);
+      border-radius: 999px;
+      background: rgba(36, 39, 58, 0.88);
     }
     button, input {
-      height: 36px;
+      height: 30px;
       border: 1px solid var(--line);
       background: var(--panel);
       color: var(--text);
-      border-radius: 6px;
+      border-radius: 8px;
       font: inherit;
-      font-size: 14px;
+      font-size: 12px;
     }
     button {
-      padding: 0 12px;
+      padding: 0 10px;
       cursor: pointer;
     }
-    button:hover { border-color: #aab3bf; }
+    button:hover {
+      border-color: var(--line-strong);
+      background: var(--panel-2);
+    }
+    button:focus-visible,
+    input:focus-visible {
+      outline: 2px solid rgba(138, 173, 244, 0.55);
+      outline-offset: 2px;
+    }
     .segmented button {
-      height: 30px;
+      height: 26px;
       border: 0;
       background: transparent;
-      border-radius: 6px;
-      padding: 0 10px;
+      border-radius: 999px;
+      padding: 0 9px;
+      color: var(--muted);
     }
     .segmented button.active {
-      background: var(--panel);
-      box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08);
-      color: var(--info);
+      background: var(--info-bg);
+      color: var(--text);
       font-weight: 650;
     }
     button.archive {
-      color: var(--muted);
+      color: var(--quiet);
     }
     button.archive:hover {
       color: var(--text);
     }
     input {
-      width: min(320px, 45vw);
-      padding: 0 11px;
+      width: min(100%, 260px);
+      padding: 0 10px;
+      color: var(--text);
     }
+    input::placeholder { color: var(--quiet); }
     main {
-      padding: 22px 0 34px;
+      padding: 12px 0 24px;
     }
     .metrics {
-      display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-      gap: 12px;
-      margin-bottom: 16px;
+      margin-bottom: 10px;
     }
-    .metric {
+    .summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
       background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 13px 14px;
-      min-height: 74px;
-    }
-    .metric .value {
-      font-size: 24px;
-      font-weight: 760;
-      line-height: 1.1;
-    }
-    .metric .label {
+      border-radius: 10px;
+      padding: 8px 10px;
       color: var(--muted);
-      font-size: 13px;
-      margin-top: 8px;
+      font-size: 12px;
+    }
+    .summary strong {
+      color: var(--text);
+      font-weight: 720;
+    }
+    .summary .split {
+      width: 1px;
+      height: 14px;
+      background: var(--line-strong);
     }
     .jobs {
       display: grid;
-      gap: 12px;
+      gap: 8px;
     }
     .job {
       background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 8px;
+      border-radius: 10px;
       overflow: hidden;
     }
     .job-head {
       display: grid;
-      grid-template-columns: minmax(220px, 1.5fr) minmax(180px, 0.8fr) minmax(280px, 1.25fr) minmax(260px, 1.1fr);
-      gap: 18px;
-      align-items: center;
-      padding: 16px 18px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px 12px;
+      align-items: start;
+      padding: 10px 12px;
     }
     .job-title {
       min-width: 0;
     }
     .name {
-      font-size: 16px;
+      font-size: 14px;
       font-weight: 720;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .id {
+    .meta-line {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      flex-wrap: wrap;
       color: var(--muted);
       font-size: 12px;
       margin-top: 4px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      line-height: 1.35;
+    }
+    .meta-line .dot-sep {
+      width: 3px;
+      height: 3px;
+      border-radius: 50%;
+      background: var(--line-strong);
     }
     .status {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       width: fit-content;
       max-width: 100%;
-      padding: 6px 10px;
+      padding: 4px 8px;
       border-radius: 999px;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 650;
       line-height: 1.2;
     }
     .status.good { color: var(--good); background: var(--good-bg); }
+    .status.running { color: var(--running); background: var(--running-bg); }
     .status.warn { color: var(--warn); background: var(--warn-bg); }
     .status.bad { color: var(--bad); background: var(--bad-bg); }
     .status.muted { color: var(--muted); background: var(--soft); }
     .dot {
-      width: 8px;
-      height: 8px;
+      width: 6px;
+      height: 6px;
       border-radius: 50%;
       background: currentColor;
       flex: 0 0 auto;
@@ -870,80 +897,50 @@ function dashboardHtml() {
     .small {
       color: var(--muted);
       font-size: 12px;
-      margin-top: 6px;
+      margin-top: 5px;
       line-height: 1.35;
     }
-    .status-note {
-      color: var(--muted);
+    .job-note {
+      grid-column: 1 / -1;
+      color: var(--warn);
       font-size: 12px;
-      margin-top: 6px;
       line-height: 1.35;
-    }
-    .status-note.good { display: none; }
-    .facts {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr);
-      gap: 7px 14px;
-      color: var(--muted);
-      font-size: 12px;
-    }
-    .fact strong {
-      color: var(--text);
-      font-weight: 650;
     }
     .progress {
+      grid-column: 1 / -1;
       display: grid;
-      gap: 7px;
+      gap: 5px;
+      margin-top: 2px;
     }
     .bar {
-      height: 8px;
+      height: 5px;
       background: var(--soft);
       border-radius: 999px;
       overflow: hidden;
     }
     .fill {
       height: 100%;
-      background: #2f7dbd;
+      background: var(--info);
       width: 0%;
     }
     .fill.complete { background: var(--good); }
-    .fill.waiting { background: #98a2b3; }
-    .events {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-    }
-    .event-pill {
-      border: 1px solid var(--line);
-      background: #fff;
-      border-radius: 999px;
-      padding: 5px 8px;
-      font-size: 12px;
-      color: var(--muted);
-    }
-    .event-pill.good { color: var(--good); border-color: #b9dfca; background: var(--good-bg); }
-    .event-pill.warn { color: var(--warn); border-color: #eacb84; background: var(--warn-bg); }
-    .event-pill.bad { color: var(--bad); border-color: #f0b5af; background: var(--bad-bg); }
-    .event-pill.muted { color: var(--muted); border-color: var(--line); background: var(--soft); }
+    .fill.running { background: var(--running); }
+    .fill.waiting { background: var(--quiet); }
     .empty {
       border: 1px dashed var(--line);
-      border-radius: 8px;
-      padding: 32px;
+      border-radius: 10px;
+      padding: 22px;
       text-align: center;
       color: var(--muted);
       background: var(--panel);
     }
-    @media (max-width: 1040px) {
-      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .job-head { grid-template-columns: 1fr; }
-      .detail-grid { grid-template-columns: 1fr; }
-    }
-    @media (max-width: 640px) {
-      .wrap { width: min(100% - 24px, 1480px); }
-      .topbar { align-items: flex-start; flex-direction: column; }
-      .toolbar { width: 100%; justify-content: stretch; }
-      input { width: 100%; }
-      .metrics { grid-template-columns: 1fr; }
+    @media (max-width: 720px) {
+      .wrap { width: min(100% - 20px, 980px); }
+      .toolbar { align-items: stretch; }
+      .segmented { order: 1; }
+      input { order: 2; flex: 1 1 100%; width: 100%; }
+      #archive-old, #refresh { order: 3; }
+      .job-head { padding: 10px; }
     }
   </style>
 </head>
@@ -951,7 +948,7 @@ function dashboardHtml() {
   <header>
     <div class="wrap topbar">
       <div>
-        <h1>Codex Monitor Bridge 控制面板</h1>
+        <h1>Codex Monitor</h1>
         <div class="subtitle" id="meta">正在读取监控状态</div>
       </div>
       <div class="toolbar">
@@ -960,8 +957,8 @@ function dashboardHtml() {
           <button data-view="history">历史</button>
           <button data-view="all">全部</button>
         </div>
-        <input id="filter" placeholder="按任务名、ID、日志路径筛选" />
-        <button class="archive" id="archive-old" title="归档 24 小时前已正常结束的本地记录">归档旧记录</button>
+        <input id="filter" placeholder="筛选任务名或日志" />
+        <button class="archive" id="archive-old" title="归档 24 小时前已正常结束的本地记录">归档</button>
         <button id="refresh">刷新</button>
       </div>
     </div>
@@ -1041,21 +1038,18 @@ function dashboardHtml() {
       return node;
     }
 
-    function metric(value, label) {
-      return el("div", { class: "metric" }, [
-        el("div", { class: "value", text: value }),
-        el("div", { class: "label", text: label }),
-      ]);
-    }
-
     function renderMetrics(data) {
-      $("metrics").replaceChildren(
-        metric(data.counts.current, "关注任务"),
-        metric(data.counts.runningDaemons, "正在运行"),
-        metric(data.counts.warning, "需要留意"),
-        metric(data.counts.needsAttention, "需要处理"),
-        metric(data.counts.history, "历史记录"),
-      );
+      $("metrics").replaceChildren(el("div", { class: "summary" }, [
+        el("span", {}, ["关注 ", el("strong", { text: data.counts.current })]),
+        el("span", { class: "split" }),
+        el("span", {}, ["运行 ", el("strong", { text: data.counts.runningDaemons })]),
+        el("span", { class: "split" }),
+        el("span", {}, ["留意 ", el("strong", { text: data.counts.warning })]),
+        el("span", { class: "split" }),
+        el("span", {}, ["异常 ", el("strong", { text: data.counts.needsAttention })]),
+        el("span", { class: "split" }),
+        el("span", {}, ["历史 ", el("strong", { text: data.counts.history })]),
+      ]));
     }
 
     function eventTone(event) {
@@ -1075,10 +1069,18 @@ function dashboardHtml() {
       const display = job.progressDisplay || {
         state: job.completed ? "complete" : "unknown",
         percent: job.completed ? 100 : 0,
-        label: job.completed ? "任务已完成" : "暂无进度行",
+        label: job.completed ? "完成" : "",
         detail: "",
       };
-      const fillClass = "fill " + (display.state === "complete" ? "complete" : display.state === "waiting" ? "waiting" : "");
+      if (!display.label || (display.state === "complete" && !job.progress)) {
+        return null;
+      }
+      const fillClass = "fill " + (
+        display.state === "complete" ? "complete" :
+        display.state === "running" ? "running" :
+        display.state === "waiting" ? "waiting" :
+        ""
+      );
       const fill = el("div", { class: fillClass });
       const percent = Math.max(0, Math.min(100, Number(display.percent) || 0));
       fill.style.width = percent + "%";
@@ -1094,28 +1096,25 @@ function dashboardHtml() {
         el("span", { text: job.status.label }),
       ]);
       const delivered = targetEvent(job);
-      const events = el("div", { class: "events" },
-        visibleEvents(job).map((event) => el("span", { class: "event-pill " + eventTone(event), text: eventText(event) }))
-      );
+      const progress = renderProgress(job);
+      const meta = [
+        text(job.host) + (job.remotePid ? " / PID " + text(job.remotePid) : ""),
+        ago(job.lastEventAt || job.lastPollAt),
+        targetLabel(delivered),
+      ].filter((value) => value && value !== "无");
+      const note = job.status.tone === "bad" || job.status.tone === "warn"
+        ? el("div", { class: "job-note", text: compact(job.status.detail, 92) })
+        : null;
       const head = el("div", { class: "job-head" }, [
         el("div", { class: "job-title" }, [
           el("div", { class: "name", text: job.name }),
-          el("div", { class: "id", text: job.id }),
+          el("div", { class: "meta-line" }, meta.flatMap((item, index) => {
+            return index === 0 ? [item] : [el("span", { class: "dot-sep" }), item];
+          })),
         ]),
-        el("div", {}, [
-          status,
-          el("div", { class: "status-note " + job.status.tone, text: job.status.detail }),
-        ]),
-        el("div", { class: "facts" }, [
-          el("div", { class: "fact" }, [el("strong", { text: "远端" }), " " + text(job.host) + " / PID " + text(job.remotePid)]),
-          el("div", { class: "fact" }, [el("strong", { text: "本地监控" }), " " + (job.daemonRunning ? "运行中" : "未运行")]),
-          el("div", { class: "fact" }, [el("strong", { text: "最近更新" }), " " + ago(job.lastEventAt || job.lastPollAt)]),
-          el("div", { class: "fact" }, [el("strong", { text: "目标会话" }), " " + targetLabel(delivered)]),
-        ]),
-        el("div", {}, [
-          renderProgress(job),
-          el("div", { class: "small" }, events),
-        ]),
+        status,
+        note,
+        progress,
       ]);
 
       return el("article", { class: "job" }, [head]);
@@ -1166,7 +1165,7 @@ function dashboardHtml() {
       const data = state.data;
       if (!data) return;
       const notice = state.notice ? " · " + state.notice : "";
-      $("meta").textContent = "运行态目录：" + data.monitorRoot + " · 更新时间：" + fmtTime(data.generatedAt) + notice;
+      $("meta").textContent = "更新时间：" + fmtTime(data.generatedAt) + notice;
       renderMetrics(data);
       syncViewButtons();
       const scoped = jobsForView(data);
