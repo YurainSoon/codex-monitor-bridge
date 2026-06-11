@@ -56,6 +56,8 @@ Common options:
   --app-server-compact-before-turn   compact the target Codex thread before sending
   --app-server-no-compact-on-context-exceeded
                                     do not compact/retry after contextWindowExceeded
+  --app-server-effort <value>        optional app-server reasoning effort for monitor turns
+  --app-server-effort-<type> <value> optional effort for one event type, e.g. --app-server-effort-done low
   --app-server-max-tail-chars <n>    default: bridge default
   --app-server-max-process-lines-chars <n>
                                     default: bridge default
@@ -310,6 +312,20 @@ function appServerBridgeCommand(options) {
   }
   if (options["app-server-no-compact-on-context-exceeded"]) {
     parts.push("--no-compact-on-context-exceeded");
+  }
+  if (typeof options["app-server-effort"] === "string") {
+    parts.push("--effort", shQuote(options["app-server-effort"]));
+  }
+  const eventEffortPrefix = "app-server-effort-";
+  for (const [key, value] of Object.entries(options)) {
+    if (!key.startsWith(eventEffortPrefix) || !value || key === "app-server-effort") {
+      continue;
+    }
+    const eventType = key.slice(eventEffortPrefix.length);
+    if (!eventType) {
+      continue;
+    }
+    parts.push(`--effort-${eventType}`, shQuote(String(value)));
   }
   if (typeof options["app-server-compact-timeout-sec"] === "string") {
     parts.push("--compact-timeout-sec", shQuote(options["app-server-compact-timeout-sec"]));

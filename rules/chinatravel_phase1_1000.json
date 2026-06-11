@@ -1,0 +1,18 @@
+{
+  "rules": [
+    {
+      "type": "progress",
+      "kind": "regex",
+      "source": "tail",
+      "regex": "PROGRESS completed_json (9[0-9][0-9]|1000)/1000",
+      "message": "ChinaTravel IJCAI2026 Phase1 1000-case run is near completion."
+    },
+    {
+      "type": "oom",
+      "kind": "regex",
+      "source": "tail",
+      "regex": "OOM_DETECTED|CUDA out of memory|OutOfMemoryError|RuntimeError:.*out of memory|Out of memory",
+      "message": "ChinaTravel IJCAI2026 Phase1 run appears to have hit an out-of-memory error."
+    }
+  ]
+}

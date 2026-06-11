@@ -257,6 +257,34 @@ the event tail. A completion prompt should usually mention only fields such as
 `jobId`, `pid`, `remoteLog`, `remoteEventLog`, `scorePath`, and `summaryPath`,
 not a full log tail.
 
+## Reasoning Effort
+
+The app-server protocol supports an optional reasoning effort override on
+`turn/start`. Pass it through the daemon when monitor notifications do not need
+the target thread's default effort:
+
+```bash
+--app-server-effort low
+```
+
+You can also override one event type:
+
+```bash
+--app-server-effort-progress low
+--app-server-effort-done medium
+--app-server-effort-oom medium
+```
+
+Common values are model dependent, but `low`, `medium`, and `high` are the
+usual choices. Leave this unset to use the target Codex thread's current
+setting.
+
+Important: app-server describes `effort` as applying to this turn and
+subsequent turns. If you send monitor events into a normal working thread, an
+explicit low effort may remain selected for later manual messages in that
+thread. Use this option deliberately, or use a dedicated monitor thread if you
+want to avoid changing a working session's settings.
+
 ## Monitor Dashboard
 
 For day-to-day use, start the local dashboard:

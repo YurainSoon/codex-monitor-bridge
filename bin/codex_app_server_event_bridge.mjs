@@ -34,6 +34,8 @@ Options:
   --compact-before-turn        compact the target thread before sending
   --no-compact-on-context-exceeded
                               do not compact/retry after contextWindowExceeded
+  --effort <value>             optional app-server reasoning effort for monitor turns
+  --effort-<type> <value>      optional effort override for one event type, e.g. --effort-done low
   --max-tail-chars <n>         default: 2000
   --max-process-lines-chars <n>
                               default: 2000
@@ -737,6 +739,18 @@ function delay(ms) {
   });
 }
 
+function effortForEvent(options, event) {
+  const eventType = String(event?.type || "event");
+  const eventSpecific = options[`effort-${eventType}`];
+  const effort = typeof eventSpecific === "string"
+    ? eventSpecific
+    : typeof options.effort === "string"
+      ? options.effort
+      : null;
+  const trimmed = String(effort || "").trim();
+  return trimmed || null;
+}
+
 async function compactThread(client, threadId, timeoutMs) {
   const waiter = client.waitForThreadCompacted(threadId, timeoutMs);
   waiter.promise.catch(() => {});
@@ -749,14 +763,14 @@ async function compactThread(client, threadId, timeoutMs) {
   }
 }
 
-async function sendTurnAndWait(client, thread, prompt, cwd) {
+async function sendTurnAndWait(client, thread, prompt, cwd, { effort = null } = {}) {
   client.resetTurnState();
   const waiter = client.waitForTurnCompleted(thread.id);
   waiter.promise.catch(() => {});
   let turnStart;
   let turnCompleted;
   try {
-    turnStart = await client.request("turn/start", {
+    const turnParams = {
       threadId: thread.id,
       input: [
         {
@@ -768,7 +782,11 @@ async function sendTurnAndWait(client, thread, prompt, cwd) {
       cwd,
       approvalPolicy: "never",
       sandboxPolicy: { type: "dangerFullAccess" },
-    });
+    };
+    if (effort) {
+      turnParams.effort = effort;
+    }
+    turnStart = await client.request("turn/start", turnParams);
     turnCompleted = await waiter.promise;
   } catch (error) {
     waiter.cancel();
@@ -816,6 +834,7 @@ async function deliverOnce({ options, event, prompt, cwd, threadFile, timeoutMs,
   let turnStart = null;
   let turnCompleted = null;
   let delivery = null;
+  const effort = effortForEvent(options, event);
   let compactedBeforeTurn = false;
   let compactedAfterContextExceeded = false;
   try {
@@ -844,7 +863,7 @@ async function deliverOnce({ options, event, prompt, cwd, threadFile, timeoutMs,
     }
 
     try {
-      delivery = await sendTurnAndWait(client, thread, prompt, cwd);
+      delivery = await sendTurnAndWait(client, thread, prompt, cwd, { effort });
     } catch (error) {
       const shouldCompactAndRetry =
         options["no-compact-on-context-exceeded"] !== true && isContextWindowExceeded(error);
@@ -854,7 +873,7 @@ async function deliverOnce({ options, event, prompt, cwd, threadFile, timeoutMs,
       log(`contextWindowExceeded for thread ${thread.id}; compacting thread and retrying monitor event once`);
       await compactThread(client, thread.id, compactTimeoutMs);
       compactedAfterContextExceeded = true;
-      delivery = await sendTurnAndWait(client, thread, prompt, cwd);
+      delivery = await sendTurnAndWait(client, thread, prompt, cwd, { effort });
     }
     turnStart = delivery.turnStart;
     turnCompleted = delivery.turnCompleted;
@@ -869,6 +888,7 @@ async function deliverOnce({ options, event, prompt, cwd, threadFile, timeoutMs,
     turnId: turnStart?.turn?.id || turnCompleted?.turn?.id || null,
     transport,
     socketPath: transport === "proxy" ? socketPath : null,
+    effort,
     event,
     promptLength: prompt.length,
     compactedBeforeTurn,
