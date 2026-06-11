@@ -1,0 +1,18 @@
+{
+  "rules": [
+    {
+      "type": "progress",
+      "kind": "regex",
+      "source": "tail",
+      "regex": "PROGRESS completed_json (10[0-9]|11[0-9]|120)/120",
+      "message": "ChinaTravel target120 run is near completion."
+    },
+    {
+      "type": "oom",
+      "kind": "regex",
+      "source": "tail",
+      "regex": "OOM_DETECTED|CUDA out of memory|OutOfMemoryError|RuntimeError:.*out of memory|Out of memory",
+      "message": "ChinaTravel target120 run appears to have hit an out-of-memory error."
+    }
+  ]
+}

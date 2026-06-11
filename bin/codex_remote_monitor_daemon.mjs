@@ -183,6 +183,7 @@ function appendEvent(job, state, event) {
     remoteLog: job.remoteLog,
     remoteEventLog: job.remoteEventLog || job.remoteLog,
     type: event.type,
+    remoteStatus: event.remoteStatus || "",
     message: event.message,
     processLines: event.processLines ?? "",
     tail: event.tail ?? "",
@@ -461,6 +462,7 @@ async function runJob(jobPath) {
       if (!state.triggered[rule.type] && ruleMatches(rule, parsed)) {
         appendEvent(job, state, {
           type: rule.type,
+          remoteStatus: parsed.status,
           message: rule.message,
           tail: parsed.tail,
           processLines: parsed.processLines,
@@ -472,6 +474,7 @@ async function runJob(jobPath) {
       if (!state.triggered.done) {
         appendEvent(job, state, {
           type: "done",
+          remoteStatus: parsed.status,
           message: job.doneMessage,
           tail: parsed.tail,
           processLines: parsed.processLines,

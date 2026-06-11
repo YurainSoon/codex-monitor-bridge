@@ -257,6 +257,49 @@ the event tail. A completion prompt should usually mention only fields such as
 `jobId`, `pid`, `remoteLog`, `remoteEventLog`, `scorePath`, and `summaryPath`,
 not a full log tail.
 
+## Monitor Dashboard
+
+For day-to-day use, start the local dashboard:
+
+```bash
+node bin/codex_monitor_dashboard.mjs --port 17888
+```
+
+Then open:
+
+```text
+http://127.0.0.1:17888
+```
+
+The dashboard shows every known monitor job with readable Chinese statuses, for
+example:
+
+- `远端任务运行中，监控正常`
+- `已完成，通知成功`
+- `已完成，通知失败`
+- `监控进程已停止，远端任务状态未知`
+
+It shows the current monitor state, remote PID, recent update time, notification
+result, and the short target Codex thread title. Detailed paths and raw logs stay
+in `.codex-monitor/` for debugging but are not shown in the main dashboard.
+
+The dashboard opens in the `关注` view. This does not mean every listed job is
+still running. It shows running jobs, failed or stale jobs, jobs that still need
+attention, and jobs that completed in the last two hours. Older successful jobs
+move to the `历史` view so the panel does not grow forever during normal use.
+Use `全部` when you want to inspect everything. The `正在运行` metric is the true
+count of active local monitor daemons.
+
+For completed jobs, the main progress bar shows monitor completion, not the
+last raw `Process [x/y]` line from the remote log. Some runners print progress
+before a case finishes, so their final line can look like `2/3` even though the
+remote process has already exited and the `done` event has fired. Raw progress
+is still available through `/api/jobs` and local event files when debugging.
+
+The `归档旧记录` button moves successful completed jobs older than 24 hours into
+`.codex-monitor/archived/`. It does not delete remote logs or active monitors.
+Use the CLI commands below for cancellation or manual inspection.
+
 ## Inspect Jobs
 
 ```bash
