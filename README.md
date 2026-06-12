@@ -309,10 +309,10 @@ example:
 
 It shows the current monitor state, remote PID, recent update time, notification
 result, and the short target Codex thread title. Each card also includes compact
-stage chips such as `进度已送达`, `完成待触发`, or `显存失败`, so you can tell
-which monitor event fired and whether its Codex notification arrived. Detailed
-paths and raw logs stay in `.codex-monitor/` for debugging but are not shown in
-the main dashboard.
+stage chips such as `进度待回复`, `进度已回复`, `完成待触发`, or `显存回复失败`,
+so you can tell which monitor event fired and whether Codex actually finished
+the reply for that event. Detailed paths and raw logs stay in `.codex-monitor/`
+for debugging but are not shown in the main dashboard.
 
 The dashboard opens in the `关注` view. This does not mean every listed job is
 still running. It shows running jobs, failed or stale jobs, jobs that still need
@@ -329,6 +329,12 @@ not counted as normal stages; if they fire, the job moves to an attention state.
 If a runner also prints `Process [x/y]` lines, that business progress is shown as
 small supplemental text and remains available through `/api/jobs` and local
 event files when debugging.
+
+The app-server bridge writes a pending delivery record before it starts a Codex
+turn. The dashboard shows this as `待回复`. After app-server emits
+`turn/completed` and the assistant text is non-empty, the bridge overwrites the
+record as `已回复`. If Codex is closed, interrupted, times out, or completes with
+empty assistant text, the event becomes `回复失败`.
 
 When `--job-name` is omitted, new jobs use a readable name derived from the
 remote log filename instead of a bare `remote-<pid>` label whenever possible.

@@ -134,18 +134,26 @@ function classifyDelivery(record) {
   if (!record) {
     return null;
   }
+  if (record.deliveryState === "pending") {
+    return {
+      state: "pending",
+      label: "等待回复",
+      tone: "running",
+      reason: record.message || "消息已发送给 Codex，正在等待回复完成。",
+    };
+  }
   if (record.delivered === false || record.error || record.errorCode) {
     return {
       state: "failed",
-      label: "通知失败",
+      label: "回复失败",
       tone: "bad",
-      reason: record.errorCode || record.error || "通知失败",
+      reason: record.errorCode || record.error || "Codex 回复没有完成。",
     };
   }
   if (hasContextError(record)) {
     return {
       state: "failed",
-      label: "通知失败",
+      label: "回复失败",
       tone: "bad",
       reason: "Codex 上下文已满",
     };
@@ -153,14 +161,14 @@ function classifyDelivery(record) {
   if (typeof record.agentText === "string" && record.agentText.trim() === "") {
     return {
       state: "failed",
-      label: "通知失败",
+      label: "回复失败",
       tone: "bad",
       reason: "Codex 没有返回有效回复",
     };
   }
   return {
-    state: "delivered",
-    label: "通知成功",
+    state: "replied",
+    label: "已回复",
     tone: "good",
     reason: "",
   };
@@ -363,11 +371,18 @@ function statusForJob({ job, state, daemonRunning, eventStatuses }) {
   }
 
   if (done?.triggered) {
-    if (done.delivery?.state === "delivered") {
+    if (done.delivery?.state === "replied" || done.delivery?.state === "delivered") {
       return {
         label: "完成",
         tone: "good",
-        detail: "完成通知已送达 Codex。",
+        detail: "Codex 已完成这次监控回复。",
+      };
+    }
+    if (done.delivery?.state === "pending") {
+      return {
+        label: "留意",
+        tone: "warn",
+        detail: "完成消息已发送给 Codex，正在等待 Codex 回复完成。",
       };
     }
     if (done.delivery?.state === "failed") {
@@ -561,10 +576,17 @@ function progressDisplayForJob(job, completed) {
 
   if (completed) {
     const failedDone = doneEvent?.delivery?.state === "failed";
+    const pendingDone = doneEvent?.delivery?.state === "pending";
     return {
-      state: failedDone ? "error" : "complete",
-      percent: 100,
-      label: failedDone ? "完成，通知失败" : doneEvent?.delivery?.state === "delivered" ? "完成，已送达" : "完成",
+      state: failedDone ? "error" : pendingDone ? "running" : "complete",
+      percent: pendingDone ? 96 : 100,
+      label: failedDone
+        ? "完成，回复失败"
+        : pendingDone
+          ? "完成，等回复"
+          : doneEvent?.delivery?.state === "replied" || doneEvent?.delivery?.state === "delivered"
+            ? "完成，已回复"
+            : "完成",
       detail: businessProgress,
     };
   }
@@ -1167,8 +1189,9 @@ function dashboardHtml() {
     function eventText(event) {
       if (!event.triggered) return event.label + "待触发";
       if (!event.delivery) return event.label + "已触发";
-      if (event.delivery.state === "delivered") return event.label + "已送达";
-      return event.label + "失败";
+      if (event.delivery.state === "pending") return event.label + "待回复";
+      if (event.delivery.state === "replied" || event.delivery.state === "delivered") return event.label + "已回复";
+      return event.label + "回复失败";
     }
 
     function isExceptionalEventType(type) {
@@ -1197,6 +1220,8 @@ function dashboardHtml() {
       const reason = event?.delivery?.reason || job.status.detail || event?.message || "需要查看本地 monitor 记录。";
       const suggestion = reason.includes("上下文")
         ? "建议压缩目标会话，或降低事件 payload 长度后重试通知。"
+        : event?.delivery?.state === "pending"
+          ? "建议保持 Codex 打开，等待这轮回复完成；如果长时间不变，可能是 Codex 被关闭或回复被中断。"
         : reason.includes("没有返回")
           ? "建议确认 Codex app-server 正常，并检查目标会话是否卡在上一轮回复。"
           : isExceptionalEventType(event?.type)

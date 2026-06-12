@@ -903,6 +903,7 @@ function writeFailure(outPath, event, error, attempt) {
   const failure = {
     createdAt: timestamp(),
     delivered: false,
+    replyCompleted: false,
     attempt,
     event,
     errorCode: error.code || error.codexErrorInfo || null,
@@ -913,6 +914,20 @@ function writeFailure(outPath, event, error, attempt) {
   writeJson(failurePath, failure);
   appendFileSync(join(monitorRoot, "app-server-failures.jsonl"), `${JSON.stringify(failure)}\n`);
   return failurePath;
+}
+
+function writePending(outPath, event, { promptLength, transport, socketPath }) {
+  writeJson(outPath, {
+    createdAt: timestamp(),
+    deliveryState: "pending",
+    delivered: null,
+    replyCompleted: false,
+    event,
+    promptLength,
+    transport,
+    socketPath: transport === "proxy" ? socketPath : null,
+    message: "Monitor event was sent to Codex; waiting for turn/completed.",
+  });
 }
 
 async function main() {
@@ -950,6 +965,11 @@ async function main() {
     throw new Error("--transport must be proxy or stdio");
   }
   const socketPath = resolve(options.socket || defaultSocketPath());
+  writePending(outPath, event, {
+    promptLength: prompt.length,
+    transport,
+    socketPath,
+  });
   let result;
   let lastError;
   for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
@@ -981,6 +1001,9 @@ async function main() {
     process.exit(1);
   }
 
+  result.delivered = true;
+  result.replyCompleted = true;
+  result.deliveryState = "replied";
   writeJson(outPath, result);
   appendFileSync(join(monitorRoot, "app-server-responses.jsonl"), `${JSON.stringify(result)}\n`);
   log(`delivered ${event.type || "event"} for job ${event.jobId || "unknown"} to thread ${result.threadId}; response ${outPath}`);
