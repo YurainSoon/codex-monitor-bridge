@@ -299,17 +299,20 @@ Then open:
 http://127.0.0.1:17888
 ```
 
-The dashboard shows every known monitor job with readable Chinese statuses, for
+The dashboard shows every known monitor job with compact Chinese statuses, for
 example:
 
-- `远端任务运行中，监控正常`
-- `已完成，通知成功`
-- `已完成，通知失败`
-- `监控进程已停止，远端任务状态未知`
+- `运行`
+- `完成`
+- `留意`
+- `异常`
 
 It shows the current monitor state, remote PID, recent update time, notification
-result, and the short target Codex thread title. Detailed paths and raw logs stay
-in `.codex-monitor/` for debugging but are not shown in the main dashboard.
+result, and the short target Codex thread title. Each card also includes compact
+stage chips such as `进度已送达`, `完成待触发`, or `显存失败`, so you can tell
+which monitor event fired and whether its Codex notification arrived. Detailed
+paths and raw logs stay in `.codex-monitor/` for debugging but are not shown in
+the main dashboard.
 
 The dashboard opens in the `关注` view. This does not mean every listed job is
 still running. It shows running jobs, failed or stale jobs, jobs that still need
@@ -318,11 +321,17 @@ move to the `历史` view so the panel does not grow forever during normal use.
 Use `全部` when you want to inspect everything. The `正在运行` metric is the true
 count of active local monitor daemons.
 
-For completed jobs, the main progress bar shows monitor completion, not the
-last raw `Process [x/y]` line from the remote log. Some runners print progress
-before a case finishes, so their final line can look like `2/3` even though the
-remote process has already exited and the `done` event has fired. Raw progress
-is still available through `/api/jobs` and local event files when debugging.
+The main progress bar shows monitor notification stages, not the raw business
+progress from the remote program. For example, a job with one `progress` rule
+and the final `done` event shows `提醒 1 / 2` after the progress reminder fires,
+then `完成` after the done reminder fires. Exceptional rules such as `oom` are
+not counted as normal stages; if they fire, the job moves to an attention state.
+If a runner also prints `Process [x/y]` lines, that business progress is shown as
+small supplemental text and remains available through `/api/jobs` and local
+event files when debugging.
+
+When `--job-name` is omitted, new jobs use a readable name derived from the
+remote log filename instead of a bare `remote-<pid>` label whenever possible.
 
 The `归档旧记录` button moves successful completed jobs older than 24 hours into
 `.codex-monitor/archived/`. It does not delete remote logs or active monitors.

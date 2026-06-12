@@ -12,7 +12,7 @@ import {
   readdirSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -422,6 +422,16 @@ function makeJob({
   return job;
 }
 
+function defaultJobName({ remoteLog, pid }) {
+  const base = basename(String(remoteLog || "")).replace(/\.(log|txt|jsonl?)$/i, "");
+  const cleaned = base
+    .replace(/[_-]?(20\d{6}T?\d{4,6}Z?|20\d{2}[-_]?\d{2}[-_]?\d{2}[-_]?\d{4,6})$/i, "")
+    .replace(/[_-]?(master|event|events|run)$/i, "")
+    .replace(/[_-]+$/g, "")
+    .trim();
+  return cleaned || `remote-${pid}`;
+}
+
 function startDetached(job) {
   closeSync(openSync(job.daemonLog, "a"));
   closeSync(openSync(job.eventLog, "a"));
@@ -545,7 +555,7 @@ printf '%s\\n' "LOG=$LOG_PATH"
     remoteEventLog: options["remote-event-log"] || log,
     split: null,
     intervalSec,
-    name: options["job-name"] || `remote-${pid}`,
+    name: options["job-name"] || defaultJobName({ remoteLog: log, pid }),
     onEventCommand: eventCommandFromOptions(options),
     rules: rulesFromOptions(options),
     doneMessage: options["done-message"] || "Remote process finished; inspect the results and continue with the next step.",
@@ -570,7 +580,7 @@ function watchExisting(options) {
     remoteLog,
     remoteEventLog: options["remote-event-log"] || remoteLog,
     intervalSec,
-    name: options["job-name"] || `remote-${pid}`,
+    name: options["job-name"] || defaultJobName({ remoteLog, pid }),
     onEventCommand: eventCommandFromOptions(options),
     rules: rulesFromOptions(options),
     doneMessage: options["done-message"] || "Remote process finished; inspect the results.",

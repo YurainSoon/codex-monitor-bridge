@@ -240,11 +240,11 @@ function loadThreadMetadata(threadIds) {
 
 function eventLabel(type) {
   const labels = {
-    progress: "进度通知",
-    done: "完成通知",
-    oom: "显存警报",
+    progress: "进度",
+    done: "完成",
+    oom: "显存",
   };
-  return labels[type] || `${type} 事件`;
+  return labels[type] || String(type || "事件");
 }
 
 function latestByType(records) {
@@ -333,6 +333,8 @@ function compactThreadTitle(threadId, rawTitle) {
 
 function statusForJob({ job, state, daemonRunning, eventStatuses }) {
   const done = eventStatuses.find((event) => event.type === "done");
+  const failedDelivery = eventStatuses.find((event) => event.triggered && event.delivery?.state === "failed");
+  const exceptional = eventStatuses.find((event) => event.triggered && isExceptionalEventType(event.type));
   const lastPollAge = secondsSince(state.lastPollAt);
   const staleAfter = Number(job.intervalSec || 30) * 3 + 90;
 
@@ -344,12 +346,28 @@ function statusForJob({ job, state, daemonRunning, eventStatuses }) {
     };
   }
 
+  if (exceptional) {
+    return {
+      label: "异常",
+      tone: "bad",
+      detail: exceptional.delivery?.reason || `${exceptional.label}事件已触发。`,
+    };
+  }
+
+  if (failedDelivery) {
+    return {
+      label: "异常",
+      tone: "bad",
+      detail: failedDelivery.delivery?.reason || `${failedDelivery.label}通知没有成功送达 Codex。`,
+    };
+  }
+
   if (done?.triggered) {
     if (done.delivery?.state === "delivered") {
       return {
         label: "完成",
         tone: "good",
-        detail: "后台已写入",
+        detail: "完成通知已送达 Codex。",
       };
     }
     if (done.delivery?.state === "failed") {
@@ -447,6 +465,7 @@ function summarizeJob(jobFile, deliveryRecords, threadMetadata) {
   return {
     id: job.id,
     name: job.name || job.id,
+    displayName: readableJobName(job),
     host: job.host,
     remotePid: job.pid,
     daemonPid: job.daemonPid || null,
@@ -476,6 +495,21 @@ function summarizeJob(jobFile, deliveryRecords, threadMetadata) {
       events: tailText(job.eventLog, 20),
     },
   };
+}
+
+function readableJobName(job) {
+  const name = String(job.name || "").trim();
+  if (name && !/^remote-\d+$/.test(name)) {
+    return name;
+  }
+  const base = basename(String(job.remoteEventLog || job.remoteLog || name || job.id));
+  const cleaned = base
+    .replace(/\.(log|txt|jsonl?)$/i, "")
+    .replace(/[_-]?(20\d{6}T?\d{4,6}Z?|20\d{2}[-_]?\d{2}[-_]?\d{2}[-_]?\d{4,6})$/i, "")
+    .replace(/[_-]?(master|event|events|run)$/i, "")
+    .replace(/[_-]+$/g, "")
+    .trim();
+  return cleaned || name || job.id;
 }
 
 function isCompletedJob(job) {
@@ -519,33 +553,63 @@ function annotateJobView(job) {
 }
 
 function progressDisplayForJob(job, completed) {
+  const plannedEvents = job.events.filter((event) => !isExceptionalEventType(event.type));
+  const plannedTotal = Math.max(1, plannedEvents.length);
+  const triggeredCount = plannedEvents.filter((event) => event.triggered).length;
+  const businessProgress = businessProgressText(job);
+  const doneEvent = job.events.find((event) => event.type === "done");
+
   if (completed) {
+    const failedDone = doneEvent?.delivery?.state === "failed";
     return {
-      state: "complete",
+      state: failedDone ? "error" : "complete",
       percent: 100,
-      label: "完成",
-      detail: "",
+      label: failedDone ? "完成，通知失败" : doneEvent?.delivery?.state === "delivered" ? "完成，已送达" : "完成",
+      detail: businessProgress,
     };
   }
 
-  if (job.progress) {
-    const percent = job.progress.total
-      ? Math.min(99, Math.round((job.progress.index / job.progress.total) * 100))
-      : 0;
+  if (job.status?.tone === "bad") {
+    return {
+      state: "error",
+      percent: Math.max(8, Math.min(100, Math.round((triggeredCount / plannedTotal) * 100))),
+      label: "出问题",
+      detail: businessProgress,
+    };
+  }
+
+  if (job.daemonRunning || triggeredCount > 0) {
+    const percent = triggeredCount > 0
+      ? Math.min(92, Math.round((triggeredCount / plannedTotal) * 100))
+      : 8;
+    const label = triggeredCount > 0
+      ? `提醒 ${triggeredCount} / ${plannedTotal}`
+      : "监控中";
     return {
       state: "running",
       percent,
-      label: `进度 ${job.progress.index} / ${job.progress.total}`,
-      detail: `成功 ${job.progress.success} / ${job.progress.evaluated}`,
+      label,
+      detail: businessProgress,
     };
   }
 
   return {
-    state: job.daemonRunning ? "waiting" : "unknown",
+    state: "waiting",
     percent: 0,
     label: "",
-    detail: "",
+    detail: businessProgress,
   };
+}
+
+function isExceptionalEventType(type) {
+  return new Set(["oom", "error", "fail", "failed", "failure"]).has(String(type || "").toLowerCase());
+}
+
+function businessProgressText(job) {
+  if (!job.progress) {
+    return "";
+  }
+  return `任务 ${job.progress.index} / ${job.progress.total}，成功 ${job.progress.success} / ${job.progress.evaluated}`;
 }
 
 function loadJobs(root) {
@@ -906,6 +970,47 @@ function dashboardHtml() {
       font-size: 12px;
       line-height: 1.35;
     }
+    .stages {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .stage {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      padding: 3px 7px;
+      border-radius: 999px;
+      font-size: 11px;
+      line-height: 1.2;
+      background: var(--soft);
+      color: var(--muted);
+    }
+    .stage.good { color: var(--good); background: var(--good-bg); }
+    .stage.running { color: var(--running); background: var(--running-bg); }
+    .stage.warn { color: var(--warn); background: var(--warn-bg); }
+    .stage.bad { color: var(--bad); background: var(--bad-bg); }
+    .diag {
+      grid-column: 1 / -1;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(24, 25, 38, 0.42);
+      padding: 6px 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .diag summary {
+      cursor: pointer;
+      color: var(--text);
+      font-weight: 650;
+    }
+    .diag p {
+      margin: 6px 0 0;
+    }
     .progress {
       grid-column: 1 / -1;
       display: grid;
@@ -926,6 +1031,7 @@ function dashboardHtml() {
     .fill.complete { background: var(--good); }
     .fill.running { background: var(--running); }
     .fill.waiting { background: var(--quiet); }
+    .fill.error { background: var(--bad); }
     .empty {
       border: 1px dashed var(--line);
       border-radius: 10px;
@@ -1054,15 +1160,49 @@ function dashboardHtml() {
 
     function eventTone(event) {
       if (!event.triggered) return "muted";
-      if (!event.delivery) return "warn";
+      if (!event.delivery) return "running";
       return event.delivery.tone || "warn";
     }
 
     function eventText(event) {
-      if (!event.triggered) return event.label + "未触发";
+      if (!event.triggered) return event.label + "待触发";
       if (!event.delivery) return event.label + "已触发";
-      if (event.delivery.state === "delivered") return event.label + "成功";
+      if (event.delivery.state === "delivered") return event.label + "已送达";
       return event.label + "失败";
+    }
+
+    function isExceptionalEventType(type) {
+      return ["oom", "error", "fail", "failed", "failure"].includes(String(type || "").toLowerCase());
+    }
+
+    function renderStages(job) {
+      const events = job.events.filter((event) => {
+        return !isExceptionalEventType(event.type) || event.triggered || event.delivery;
+      });
+      if (!events.length) return null;
+      return el("div", { class: "stages" }, events.map((event) => {
+        const tone = eventTone(event);
+        return el("span", { class: "stage " + tone, title: event.delivery?.reason || event.message || "" }, [
+          el("span", { class: "dot" }),
+          el("span", { text: eventText(event) }),
+        ]);
+      }));
+    }
+
+    function diagnosticForJob(job) {
+      const failed = job.events.find((event) => event.triggered && event.delivery?.state === "failed");
+      const exceptional = job.events.find((event) => event.triggered && isExceptionalEventType(event.type));
+      const event = failed || exceptional;
+      if (!event && job.status.tone !== "bad" && job.status.tone !== "warn") return null;
+      const reason = event?.delivery?.reason || job.status.detail || event?.message || "需要查看本地 monitor 记录。";
+      const suggestion = reason.includes("上下文")
+        ? "建议压缩目标会话，或降低事件 payload 长度后重试通知。"
+        : reason.includes("没有返回")
+          ? "建议确认 Codex app-server 正常，并检查目标会话是否卡在上一轮回复。"
+          : isExceptionalEventType(event?.type)
+            ? "建议按这类异常对应的 prompt 处理远端任务，再重新启动需要的实验。"
+            : "建议确认 app-server daemon 正在运行，并查看本地失败记录。";
+      return { reason, suggestion, event };
     }
 
     function renderProgress(job) {
@@ -1072,12 +1212,13 @@ function dashboardHtml() {
         label: job.completed ? "完成" : "",
         detail: "",
       };
-      if (!display.label || (display.state === "complete" && !job.progress)) {
+      if (!display.label) {
         return null;
       }
       const fillClass = "fill " + (
         display.state === "complete" ? "complete" :
         display.state === "running" ? "running" :
+        display.state === "error" ? "error" :
         display.state === "waiting" ? "waiting" :
         ""
       );
@@ -1097,6 +1238,8 @@ function dashboardHtml() {
       ]);
       const delivered = targetEvent(job);
       const progress = renderProgress(job);
+      const stages = renderStages(job);
+      const diagnostic = diagnosticForJob(job);
       const meta = [
         text(job.host) + (job.remotePid ? " / PID " + text(job.remotePid) : ""),
         ago(job.lastEventAt || job.lastPollAt),
@@ -1107,14 +1250,20 @@ function dashboardHtml() {
         : null;
       const head = el("div", { class: "job-head" }, [
         el("div", { class: "job-title" }, [
-          el("div", { class: "name", text: job.name }),
+          el("div", { class: "name", text: job.displayName || job.name, title: job.name + " · " + shortId(job.id) }),
           el("div", { class: "meta-line" }, meta.flatMap((item, index) => {
             return index === 0 ? [item] : [el("span", { class: "dot-sep" }), item];
           })),
         ]),
         status,
         note,
+        stages,
         progress,
+        diagnostic ? el("details", { class: "diag" }, [
+          el("summary", { text: "诊断" }),
+          el("p", { text: "原因：" + compact(diagnostic.reason, 160) }),
+          el("p", { text: diagnostic.suggestion }),
+        ]) : null,
       ]);
 
       return el("article", { class: "job" }, [head]);
@@ -1125,6 +1274,7 @@ function dashboardHtml() {
       const haystack = [
         job.id,
         job.name,
+        job.displayName,
         job.remoteLog,
         job.remoteEventLog,
         job.status.label,
