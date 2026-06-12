@@ -1,11 +1,60 @@
 # Codex Monitor Bridge
 
-Wake a specific Codex session when a long-running remote job reaches a
-configured event, such as progress, OOM, or completion.
+Codex Monitor Bridge is a small, open-source bridge for waking a specific Codex
+session when a long-running remote job reaches a meaningful event, such as a
+progress checkpoint, an out-of-memory failure, or completion.
 
-This package is useful when you want Codex to stop actively waiting, let you
-continue working, and then receive an automatic message later when a background
-monitor fires.
+It is designed for researchers, engineers, and agent builders who run expensive
+experiments, evaluations, training jobs, or batch workflows and want Codex to
+stay useful without actively occupying a chat turn just to watch logs.
+
+The core idea is simple: let a lightweight local daemon monitor the job, then
+send a compact, structured event back into the right Codex thread only when
+there is something worth handling.
+
+## Why This Exists
+
+Modern AI coding assistants are increasingly used to manage work that outlives
+a single interactive turn: model training, benchmark runs, CI-like experiments,
+remote GPU jobs, overnight evaluations, and data pipelines. Without a monitor,
+users often fall into one of two awkward patterns:
+
+- keep an assistant turn open while it repeatedly checks logs
+- leave the job unattended and manually remember to come back later
+
+Codex Monitor Bridge offers a third pattern. The assistant can stop waiting, the
+user can keep working, and Codex can be woken later with the right context when
+an event actually happens.
+
+This helps the broader agent ecosystem by making long-running work more
+observable, interruptible, and reproducible without requiring every project to
+invent its own one-off monitoring script.
+
+## Core Capabilities
+
+- Monitor an existing remote PID or launch a new remote command.
+- Watch remote logs for configurable events such as progress checkpoints and
+  OOM errors.
+- Send event-specific prompts into a target Codex session through app-server
+  remote control.
+- Track whether Codex merely received the event, is still replying, completed
+  the reply, or failed to produce a usable response.
+- Provide a compact local dashboard for active jobs, recent completions,
+  failures, and notification stages.
+- Keep prompt payloads small with truncation, prompt caps, and automatic
+  compact-and-retry after context-window failures.
+- Use plain files for runtime state so the system is easy to inspect, debug,
+  copy, and adapt.
+
+## Who It Helps
+
+Codex Monitor Bridge is useful for:
+
+- ML researchers running training or evaluation jobs on remote GPU machines
+- open-source maintainers who want agents to react to long tests or benchmarks
+- developers using Codex as an experiment operator across multiple sessions
+- agent-tool authors exploring event-driven workflows outside active turns
+- teams that want transparent local automation instead of a hosted service
 
 ## What It Does
 
@@ -23,6 +72,13 @@ Important: this wakeup arrives as a Codex user message, not as a tool result.
 Codex currently exposes `turn/start` for this kind of external wakeup, and that
 API accepts user input. Tool results normally require Codex to have called a
 tool first.
+
+## Project Status
+
+The project is currently early but usable. It was extracted from real remote
+experiment workflows and is being shaped into a general-purpose utility for the
+Codex community. The current focus is reliability, clear status reporting, and
+safe prompt payloads for long-running jobs.
 
 ## Requirements
 
@@ -57,6 +113,7 @@ codex-monitor-bridge/
   bin/
     codex_remote_monitor_daemon.mjs
     codex_app_server_event_bridge.mjs
+    codex_monitor_dashboard.mjs
   prompts/
     progress.md
     oom.md
@@ -64,6 +121,7 @@ codex-monitor-bridge/
   rules/
     rules_with_oom.json
   README.md
+  LICENSE
 ```
 
 Runtime state is written under:
@@ -419,6 +477,53 @@ recorded under:
 An empty assistant response is also treated as delivery failure, because it can
 mean app-server rejected the input before Codex produced a real turn.
 
+## Roadmap
+
+The project is actively evolving around practical long-running-agent workflows.
+Planned work includes:
+
+- **Richer remote diagnostics**: persist SSH failures, remote PID state, log
+  readability, and last successful remote check so the dashboard can distinguish
+  "remote unreachable" from "daemon stopped" and "job finished without event".
+- **Configurable event taxonomies**: let users define which events are normal
+  stages, warnings, failures, retries, or recovery actions instead of relying on
+  built-in names like `progress`, `oom`, and `done`.
+- **Safer retry and recovery flows**: support event-specific retry policies,
+  recovery prompts, and optional follow-up actions such as lowering batch size
+  after OOM or launching the next experiment after successful completion.
+- **Portable project templates**: provide examples for ML training,
+  benchmarking, data processing, and CI-style workflows so new users can adapt
+  the bridge without reading all internals first.
+- **Dashboard polish**: add better filtering, accessible status labels,
+  archived-job browsing, and clearer "needs attention" summaries for many
+  concurrent monitors.
+- **Packaging improvements**: add npm-friendly metadata, versioned releases,
+  and installation scripts for users who do not want to copy the repository
+  manually.
+- **Codex integration tracking**: follow Codex app-server changes and update
+  the bridge when more direct monitor, automation, or tool-result primitives
+  become available.
+
+## Community Value
+
+This project aims to make agent-driven development more useful for workflows
+that do not fit into a short request-response loop. The monitor bridge is small
+on purpose: it is inspectable, file-based, and easy to adapt for local policies
+or private infrastructure.
+
+Potential community benefits include:
+
+- a reference pattern for event-driven Codex workflows
+- reusable monitor rules and prompt templates for common long-running tasks
+- better UX expectations around agent wakeups, reply completion, and failure
+  visibility
+- a practical example of combining local daemons, remote jobs, and Codex
+  app-server control without a hosted backend
+
+Contributions are welcome in the form of bug reports, monitor rules, prompt
+templates, dashboard improvements, documentation examples, and portability
+fixes for different shells or remote environments.
+
 ## Design Notes
 
 This package deliberately keeps monitoring outside the active Codex turn. The
@@ -428,3 +533,7 @@ only contacts Codex when an event fires.
 That means Codex is free between events, and the user can keep chatting or work
 in other sessions. When the monitor event fires, Codex receives a new turn in
 the specified session.
+
+## License
+
+Codex Monitor Bridge is released under the MIT License. See [LICENSE](LICENSE).
