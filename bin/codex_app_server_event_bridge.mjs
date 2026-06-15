@@ -31,6 +31,18 @@ Options:
   --compact-timeout-sec <sec>  default: same as --timeout-sec
   --retry-sec <seconds>        default: 15
   --max-retries <n>            default: 8
+  --no-quota-preflight         skip Codex usage/rate-limit check before sending
+  --no-defer-on-usage-limit    fail immediately instead of waiting for quota reset
+  --quota-limit-id <id>        default: codex
+  --quota-max-defer-sec <sec>  default: 21600; max time to wait for quota reset
+  --quota-resume-buffer-sec <sec>
+                              default: 60; wait this many extra seconds after reset
+  --quota-min-primary-remaining-percent <n>
+                              default: 1
+  --quota-min-secondary-remaining-percent <n>
+                              default: 1
+  --quota-min-individual-remaining-percent <n>
+                              default: 1
   --compact-before-turn        compact the target thread before sending
   --no-compact-on-context-exceeded
                               do not compact/retry after contextWindowExceeded
@@ -116,6 +128,17 @@ function readNonNegativeInt(value, defaultValue) {
     return defaultValue;
   }
   return Math.floor(parsed);
+}
+
+function readNonNegativeNumber(value, defaultValue) {
+  if (value == null || value === true) {
+    return defaultValue;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return defaultValue;
+  }
+  return parsed;
 }
 
 function promptLimits(options = {}) {
@@ -261,7 +284,15 @@ function codexErrorInfoFrom(value) {
     return null;
   }
   if (typeof value === "string") {
-    return value.includes("contextWindowExceeded") ? "contextWindowExceeded" : null;
+    const knownCodes = [
+      "contextWindowExceeded",
+      "usageLimitExceeded",
+      "serverOverloaded",
+      "responseTooManyFailedAttempts",
+      "internalServerError",
+      "streamDisconnected",
+    ];
+    return knownCodes.find((code) => value.includes(code)) || null;
   }
   return (
     value.codexErrorInfo ||
@@ -277,6 +308,10 @@ function isContextWindowExceeded(value) {
   return codexErrorInfoFrom(value) === "contextWindowExceeded";
 }
 
+function isUsageLimitExceeded(value) {
+  return codexErrorInfoFrom(value) === "usageLimitExceeded";
+}
+
 function appServerErrorFromPayload(payload, prefix = "app-server error") {
   const message = payload?.message || payload?.error?.message || JSON.stringify(payload);
   const error = new Error(`${prefix}: ${message}`);
@@ -288,12 +323,208 @@ function appServerErrorFromPayload(payload, prefix = "app-server error") {
   return error;
 }
 
-function deliveryError(message, code, appServerErrors = []) {
+function deliveryError(message, code, appServerErrors = [], details = {}) {
   const error = new Error(message);
   error.code = code;
   error.codexErrorInfo = code;
   error.appServerErrors = appServerErrors;
+  Object.assign(error, details);
   return error;
+}
+
+function appServerErrorsFrom(error) {
+  if (!error) {
+    return [];
+  }
+  if (Array.isArray(error.appServerErrors)) {
+    return error.appServerErrors;
+  }
+  if (error.appServerError) {
+    return [error.appServerError];
+  }
+  return [];
+}
+
+function shouldRejectTurnForAppServerError(payload) {
+  return (
+    isContextWindowExceeded(payload) ||
+    isUsageLimitExceeded(payload) ||
+    payload?.willRetry === false
+  );
+}
+
+function isRetryableDeliveryError(error) {
+  if (!error) {
+    return false;
+  }
+  const code = error.code || error.codexErrorInfo;
+  if ([
+    "contextWindowExceeded",
+    "emptyAgentText",
+    "usageLimitExceeded",
+    "usageLimitDeferred",
+    "usageLimitBlocked",
+    "quotaReadFailed",
+    "appServerRejected",
+  ].includes(code)) {
+    return false;
+  }
+  return !appServerErrorsFrom(error).some((entry) => entry?.willRetry === false);
+}
+
+function quotaConfig(options = {}) {
+  return {
+    enabled: options["no-quota-preflight"] !== true,
+    deferOnLimit: options["no-defer-on-usage-limit"] !== true,
+    limitId: typeof options["quota-limit-id"] === "string" ? options["quota-limit-id"] : "codex",
+    minPrimaryRemainingPercent: readNonNegativeNumber(options["quota-min-primary-remaining-percent"], 1),
+    minSecondaryRemainingPercent: readNonNegativeNumber(options["quota-min-secondary-remaining-percent"], 1),
+    minIndividualRemainingPercent: readNonNegativeNumber(options["quota-min-individual-remaining-percent"], 1),
+    maxDeferSec: readNonNegativeNumber(options["quota-max-defer-sec"], 21_600),
+    resumeBufferSec: readNonNegativeNumber(options["quota-resume-buffer-sec"], 60),
+  };
+}
+
+function normalizeResetMs(value) {
+  if (value == null) {
+    return null;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value > 10_000_000_000 ? value : value * 1000;
+  }
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    return numeric > 10_000_000_000 ? numeric : numeric * 1000;
+  }
+  const parsed = Date.parse(String(value));
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function selectRateLimitSnapshot(response, limitId = "codex") {
+  return response?.rateLimitsByLimitId?.[limitId] || response?.rateLimits || null;
+}
+
+function summarizeRateLimitWindow(window) {
+  if (!window || typeof window !== "object") {
+    return null;
+  }
+  return {
+    usedPercent: typeof window.usedPercent === "number" ? window.usedPercent : null,
+    windowDurationMins: window.windowDurationMins ?? null,
+    resetsAt: window.resetsAt ?? null,
+  };
+}
+
+function summarizeRateLimitSnapshot(snapshot) {
+  if (!snapshot) {
+    return null;
+  }
+  return {
+    limitId: snapshot.limitId || null,
+    limitName: snapshot.limitName || null,
+    planType: snapshot.planType || null,
+    rateLimitReachedType: snapshot.rateLimitReachedType || null,
+    primary: summarizeRateLimitWindow(snapshot.primary),
+    secondary: summarizeRateLimitWindow(snapshot.secondary),
+    credits: snapshot.credits
+      ? {
+          hasCredits: snapshot.credits.hasCredits ?? null,
+          balance: snapshot.credits.balance ?? null,
+        }
+      : null,
+    individualLimit: snapshot.individualLimit
+      ? {
+          limit: snapshot.individualLimit.limit ?? null,
+          used: snapshot.individualLimit.used ?? null,
+          remainingPercent: snapshot.individualLimit.remainingPercent ?? null,
+          resetsAt: snapshot.individualLimit.resetsAt ?? null,
+        }
+      : null,
+  };
+}
+
+function quotaDecision(response, config) {
+  const snapshot = selectRateLimitSnapshot(response, config.limitId);
+  if (!snapshot) {
+    return {
+      blocked: true,
+      code: "quotaUnavailable",
+      label: "无法读取 Codex 用量",
+      reasons: ["app-server did not return a Codex rate-limit snapshot"],
+      retryAfterAt: null,
+      waitMs: null,
+      snapshot: null,
+    };
+  }
+
+  const reasons = [];
+  const resetMsCandidates = [];
+  const addReset = (value) => {
+    const resetMs = normalizeResetMs(value);
+    if (resetMs != null) {
+      resetMsCandidates.push(resetMs);
+    }
+  };
+  const checkWindow = (name, window, minRemainingPercent) => {
+    if (!window || typeof window.usedPercent !== "number") {
+      return;
+    }
+    const remaining = Math.max(0, 100 - window.usedPercent);
+    if (window.usedPercent >= 100 || remaining <= minRemainingPercent) {
+      reasons.push(`${name} quota remaining ${remaining.toFixed(2)}%`);
+      addReset(window.resetsAt);
+    }
+  };
+
+  if (snapshot.rateLimitReachedType) {
+    reasons.push(`Codex reported ${snapshot.rateLimitReachedType}`);
+    const reachedType = String(snapshot.rateLimitReachedType).toLowerCase();
+    if (reachedType.includes("primary")) {
+      addReset(snapshot.primary?.resetsAt);
+    } else if (reachedType.includes("secondary")) {
+      addReset(snapshot.secondary?.resetsAt);
+    } else if (reachedType.includes("individual") || reachedType.includes("spend")) {
+      addReset(snapshot.individualLimit?.resetsAt);
+    } else {
+      addReset(snapshot.primary?.resetsAt);
+      addReset(snapshot.secondary?.resetsAt);
+      addReset(snapshot.individualLimit?.resetsAt);
+    }
+  }
+  checkWindow("primary", snapshot.primary, config.minPrimaryRemainingPercent);
+  checkWindow("secondary", snapshot.secondary, config.minSecondaryRemainingPercent);
+  if (
+    snapshot.individualLimit &&
+    typeof snapshot.individualLimit.remainingPercent === "number" &&
+    snapshot.individualLimit.remainingPercent <= config.minIndividualRemainingPercent
+  ) {
+    reasons.push(`individual quota remaining ${snapshot.individualLimit.remainingPercent.toFixed(2)}%`);
+    addReset(snapshot.individualLimit.resetsAt);
+  }
+
+  if (!reasons.length) {
+    return {
+      blocked: false,
+      code: "quotaAvailable",
+      label: "Codex 用量可用",
+      reasons: [],
+      retryAfterAt: null,
+      waitMs: null,
+      snapshot: summarizeRateLimitSnapshot(snapshot),
+    };
+  }
+
+  const resetMs = resetMsCandidates.length ? Math.max(...resetMsCandidates) : null;
+  const retryMs = resetMs == null ? null : resetMs + config.resumeBufferSec * 1000;
+  return {
+    blocked: true,
+    code: "usageLimitBlocked",
+    label: "Codex 用量限制，稍后推送",
+    reasons,
+    retryAfterAt: retryMs == null ? null : new Date(retryMs).toISOString(),
+    waitMs: retryMs == null ? null : Math.max(0, retryMs - Date.now()),
+    snapshot: summarizeRateLimitSnapshot(snapshot),
+  };
 }
 
 class AppServerClient {
@@ -465,7 +696,7 @@ class AppServerClient {
     if (message.method === "error") {
       this.appServerErrors.push(message.params);
       log(`app-server notification error: ${JSON.stringify(message.params)}`);
-      if (isContextWindowExceeded(message.params)) {
+      if (shouldRejectTurnForAppServerError(message.params)) {
         const error = appServerErrorFromPayload(message.params, "app-server notification error");
         const threadId = message.params?.threadId;
         const remaining = [];
@@ -751,6 +982,123 @@ function effortForEvent(options, event) {
   return trimmed || null;
 }
 
+async function readCodexRateLimits({ timeoutMs, transport, socketPath }) {
+  if (transport === "proxy" && !existsSync(socketPath)) {
+    throw new Error(
+      `app-server control socket not found at ${socketPath}; run "codex app-server daemon bootstrap --remote-control" with a standalone Codex install, or pass --transport stdio`,
+    );
+  }
+  const client = new AppServerClient({ timeoutMs, transport, socketPath });
+  try {
+    await client.request("initialize", {
+      clientInfo: {
+        name: "codex-monitor-bridge",
+        title: "Codex Monitor Bridge",
+        version: "0.1.0",
+      },
+      capabilities: {
+        experimentalApi: true,
+        requestAttestation: false,
+      },
+    });
+    await client.notify("initialized");
+    return await client.request("account/rateLimits/read");
+  } finally {
+    client.close();
+  }
+}
+
+function writeQuotaDeferred(outPath, event, { promptLength, transport, socketPath, decision, attempt }) {
+  writeJson(outPath, {
+    createdAt: timestamp(),
+    deliveryState: "deferred_usage_limit",
+    delivered: null,
+    replyCompleted: false,
+    attempt,
+    event,
+    promptLength,
+    transport,
+    socketPath: transport === "proxy" ? socketPath : null,
+    quotaDecision: decision,
+    retryAfterAt: decision.retryAfterAt,
+    message: "Codex 用量限制，稍后推送。",
+  });
+}
+
+async function waitForQuotaAvailability({ options, event, outPath, promptLength, timeoutMs, transport, socketPath }) {
+  const config = quotaConfig(options);
+  if (!config.enabled) {
+    return {
+      enabled: false,
+      attempts: 0,
+      decision: null,
+    };
+  }
+
+  const startedAt = Date.now();
+  const deadline = startedAt + config.maxDeferSec * 1000;
+  let attempt = 0;
+  while (true) {
+    attempt += 1;
+    let response;
+    try {
+      response = await readCodexRateLimits({ timeoutMs, transport, socketPath });
+    } catch (error) {
+      throw deliveryError(
+        `could not read Codex usage before sending monitor event: ${error.message}`,
+        "quotaReadFailed",
+        appServerErrorsFrom(error),
+        { deliveryState: "failed_quota_read" },
+      );
+    }
+
+    const decision = quotaDecision(response, config);
+    if (!decision.blocked) {
+      return {
+        enabled: true,
+        attempts: attempt,
+        decision,
+      };
+    }
+
+    writeQuotaDeferred(outPath, event, {
+      promptLength,
+      transport,
+      socketPath,
+      decision,
+      attempt,
+    });
+    log(`quota preflight deferred ${event.type || "event"} for job ${event.jobId || "unknown"}: ${decision.reasons.join("; ")}`);
+
+    if (!config.deferOnLimit || !decision.retryAfterAt || decision.waitMs == null) {
+      throw deliveryError(
+        "Codex usage limit blocks delivery and no automatic defer is available",
+        "usageLimitBlocked",
+        [],
+        {
+          deliveryState: "blocked_usage_limit",
+          quotaDecision: decision,
+          retryAfterAt: decision.retryAfterAt,
+        },
+      );
+    }
+    const waitMs = Math.max(1000, decision.waitMs);
+    if (Date.now() + waitMs > deadline) {
+      throw deliveryError(
+        `Codex usage limit reset is outside --quota-max-defer-sec (${config.maxDeferSec}s)`,
+        "usageLimitDeferred",
+        [],
+        {
+          deliveryState: "deferred_usage_limit",
+          quotaDecision: decision,
+          retryAfterAt: decision.retryAfterAt,
+        },
+      );
+    }
+    await delay(waitMs);
+  }
+}
+
 async function compactThread(client, threadId, timeoutMs) {
   const waiter = client.waitForThreadCompacted(threadId, timeoutMs);
   waiter.promise.catch(() => {});
@@ -798,6 +1146,24 @@ async function sendTurnAndWait(client, thread, prompt, cwd, { effort = null } = 
     throw deliveryError(
       "app-server reported contextWindowExceeded while handling the monitor event",
       "contextWindowExceeded",
+      client.appServerErrors,
+    );
+  }
+
+  const usageError = client.appServerErrors.find((entry) => isUsageLimitExceeded(entry));
+  if (usageError) {
+    throw deliveryError(
+      "app-server reported usageLimitExceeded while handling the monitor event",
+      "usageLimitExceeded",
+      client.appServerErrors,
+    );
+  }
+
+  const terminalError = client.appServerErrors.find((entry) => entry?.willRetry === false);
+  if (terminalError) {
+    throw deliveryError(
+      "app-server rejected the monitor event without retry",
+      codexErrorInfoFrom(terminalError) || "appServerRejected",
       client.appServerErrors,
     );
   }
@@ -902,12 +1268,15 @@ async function deliverOnce({ options, event, prompt, cwd, threadFile, timeoutMs,
 function writeFailure(outPath, event, error, attempt) {
   const failure = {
     createdAt: timestamp(),
+    deliveryState: error.deliveryState || "failed",
     delivered: false,
     replyCompleted: false,
     attempt,
     event,
     errorCode: error.code || error.codexErrorInfo || null,
     appServerErrors: error.appServerErrors || (error.appServerError ? [error.appServerError] : []),
+    quotaDecision: error.quotaDecision || null,
+    retryAfterAt: error.retryAfterAt || null,
     error: error.stack || error.message,
   };
   const failurePath = outPath.replace(/\.json$/, ".failed.json");
@@ -916,7 +1285,7 @@ function writeFailure(outPath, event, error, attempt) {
   return failurePath;
 }
 
-function writePending(outPath, event, { promptLength, transport, socketPath }) {
+function writePending(outPath, event, { promptLength, transport, socketPath, quotaPreflight }) {
   writeJson(outPath, {
     createdAt: timestamp(),
     deliveryState: "pending",
@@ -926,6 +1295,7 @@ function writePending(outPath, event, { promptLength, transport, socketPath }) {
     promptLength,
     transport,
     socketPath: transport === "proxy" ? socketPath : null,
+    quotaPreflight,
     message: "Monitor event was sent to Codex; waiting for turn/completed.",
   });
 }
@@ -965,14 +1335,33 @@ async function main() {
     throw new Error("--transport must be proxy or stdio");
   }
   const socketPath = resolve(options.socket || defaultSocketPath());
+  let quotaPreflight;
+  try {
+    quotaPreflight = await waitForQuotaAvailability({
+      options,
+      event,
+      outPath,
+      promptLength: prompt.length,
+      timeoutMs,
+      transport,
+      socketPath,
+    });
+  } catch (error) {
+    const failurePath = writeFailure(outPath, event, error, 0);
+    console.error(JSON.stringify({ delivered: false, output: failurePath, errorCode: error.code || null }, null, 2));
+    process.exit(1);
+  }
   writePending(outPath, event, {
     promptLength: prompt.length,
     transport,
     socketPath,
+    quotaPreflight,
   });
   let result;
   let lastError;
+  let finalAttempt = 0;
   for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
+    finalAttempt = attempt;
     try {
       result = await deliverOnce({
         options,
@@ -989,18 +1378,21 @@ async function main() {
     } catch (error) {
       lastError = error;
       log(`delivery attempt ${attempt} failed for ${event.type || "event"} job ${event.jobId || "unknown"}: ${error.message}`);
-      if (attempt <= maxRetries) {
+      if (attempt <= maxRetries && isRetryableDeliveryError(error)) {
         await delay(retryMs);
+      } else {
+        break;
       }
     }
   }
 
   if (!result) {
-    const failurePath = writeFailure(outPath, event, lastError || new Error("delivery failed"), maxRetries + 1);
+    const failurePath = writeFailure(outPath, event, lastError || new Error("delivery failed"), finalAttempt || maxRetries + 1);
     console.error(JSON.stringify({ delivered: false, output: failurePath }, null, 2));
     process.exit(1);
   }
 
+  result.quotaPreflight = quotaPreflight;
   result.delivered = true;
   result.replyCompleted = true;
   result.deliveryState = "replied";

@@ -295,6 +295,10 @@ The bridge now protects the target Codex thread in three ways:
   template cannot flood the context window.
 - If app-server reports `contextWindowExceeded`, the bridge requests
   `thread/compact/start` on the target thread and retries the event once.
+- Before sending a turn, the bridge asks app-server for current Codex usage and
+  rate-limit state. If Codex is out of usable quota, the event is not pushed
+  into the thread immediately; it is recorded as `稍后推送` and retried after the
+  reported reset time when that reset is inside the configured waiting window.
 
 Useful size controls:
 
@@ -303,6 +307,20 @@ Useful size controls:
 --app-server-max-process-lines-chars 1200
 --app-server-max-prompt-chars 8000
 ```
+
+Useful quota controls:
+
+```bash
+--app-server-quota-max-defer-sec 21600
+--app-server-quota-resume-buffer-sec 60
+```
+
+By default, the bridge will wait up to 6 hours for Codex quota to refresh. If
+the reset is farther away, if app-server cannot return usage information, or if
+`--app-server-no-defer-on-usage-limit` is set, the event is recorded as a
+delivery failure instead of repeatedly retrying and polluting the target thread.
+Use `--app-server-no-quota-preflight` only when you deliberately want to skip
+this protection.
 
 `--app-server-compact-before-turn` is available when you intentionally want to
 compact before every monitor event. In normal use, leave it off and rely on the
@@ -389,10 +407,12 @@ small supplemental text and remains available through `/api/jobs` and local
 event files when debugging.
 
 The app-server bridge writes a pending delivery record before it starts a Codex
-turn. The dashboard shows this as `待回复`. After app-server emits
-`turn/completed` and the assistant text is non-empty, the bridge overwrites the
-record as `已回复`. If Codex is closed, interrupted, times out, or completes with
-empty assistant text, the event becomes `回复失败`.
+turn. The dashboard shows this as `待回复`. If quota preflight detects a Codex
+usage limit before the turn starts, the dashboard shows `稍后推送` or
+`用量受限`. After app-server emits `turn/completed` and the assistant text is
+non-empty, the bridge overwrites the record as `已回复`. If Codex is closed,
+interrupted, times out, rejects the turn, or completes with empty assistant
+text, the event becomes `回复失败` or a more specific attention state.
 
 When `--job-name` is omitted, new jobs use a readable name derived from the
 remote log filename instead of a bare `remote-<pid>` label whenever possible.
@@ -476,6 +496,12 @@ recorded under:
 
 An empty assistant response is also treated as delivery failure, because it can
 mean app-server rejected the input before Codex produced a real turn.
+
+If the dashboard shows `稍后推送`, Codex usage is currently limited and the
+bridge is waiting for the reset time reported by app-server. If it shows
+`用量受限` or `检查失败`, the bridge intentionally did not send the monitor
+message into the target thread; check the failure JSON for `quotaDecision` and
+restart the monitor event when appropriate.
 
 ## Roadmap
 

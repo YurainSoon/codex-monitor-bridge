@@ -51,6 +51,21 @@ Common options:
   --app-server-transport <mode>      proxy or stdio; default: proxy
   --app-server-socket <path>         optional app-server control socket path
   --app-server-timeout-sec <seconds> default: 180
+  --app-server-no-quota-preflight
+                                    skip Codex usage/rate-limit check before sending
+  --app-server-no-defer-on-usage-limit
+                                    fail immediately instead of waiting for quota reset
+  --app-server-quota-limit-id <id>  default: codex
+  --app-server-quota-max-defer-sec <seconds>
+                                    default: 21600
+  --app-server-quota-resume-buffer-sec <seconds>
+                                    default: 60
+  --app-server-quota-min-primary-remaining-percent <n>
+                                    default: 1
+  --app-server-quota-min-secondary-remaining-percent <n>
+                                    default: 1
+  --app-server-quota-min-individual-remaining-percent <n>
+                                    default: 1
   --app-server-compact-timeout-sec <seconds>
                                     default: same as app-server timeout
   --app-server-compact-before-turn   compact the target Codex thread before sending
@@ -312,6 +327,25 @@ function appServerBridgeCommand(options) {
   }
   if (options["app-server-no-compact-on-context-exceeded"]) {
     parts.push("--no-compact-on-context-exceeded");
+  }
+  if (options["app-server-no-quota-preflight"]) {
+    parts.push("--no-quota-preflight");
+  }
+  if (options["app-server-no-defer-on-usage-limit"]) {
+    parts.push("--no-defer-on-usage-limit");
+  }
+  const quotaOptionMap = {
+    "app-server-quota-limit-id": "quota-limit-id",
+    "app-server-quota-max-defer-sec": "quota-max-defer-sec",
+    "app-server-quota-resume-buffer-sec": "quota-resume-buffer-sec",
+    "app-server-quota-min-primary-remaining-percent": "quota-min-primary-remaining-percent",
+    "app-server-quota-min-secondary-remaining-percent": "quota-min-secondary-remaining-percent",
+    "app-server-quota-min-individual-remaining-percent": "quota-min-individual-remaining-percent",
+  };
+  for (const [sourceKey, targetKey] of Object.entries(quotaOptionMap)) {
+    if (typeof options[sourceKey] === "string") {
+      parts.push(`--${targetKey}`, shQuote(options[sourceKey]));
+    }
   }
   if (typeof options["app-server-effort"] === "string") {
     parts.push("--effort", shQuote(options["app-server-effort"]));

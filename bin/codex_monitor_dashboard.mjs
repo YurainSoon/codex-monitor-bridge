@@ -134,6 +134,34 @@ function classifyDelivery(record) {
   if (!record) {
     return null;
   }
+  if (record.deliveryState === "deferred_usage_limit" || record.errorCode === "usageLimitDeferred") {
+    return {
+      state: "deferred_usage_limit",
+      label: "稍后推送",
+      tone: "warn",
+      reason: record.retryAfterAt
+        ? `Codex 用量限制，将在额度刷新后重试：${record.retryAfterAt}`
+        : "Codex 用量限制，暂时没有发送到目标会话。",
+    };
+  }
+  if (record.deliveryState === "blocked_usage_limit" || record.errorCode === "usageLimitBlocked" || record.errorCode === "usageLimitExceeded") {
+    return {
+      state: "usage_limited",
+      label: "用量受限",
+      tone: "bad",
+      reason: record.retryAfterAt
+        ? `Codex 用量限制，预计刷新：${record.retryAfterAt}`
+        : "Codex 用量限制，通知没有发送到目标会话。",
+    };
+  }
+  if (record.errorCode === "quotaReadFailed") {
+    return {
+      state: "failed",
+      label: "检查失败",
+      tone: "bad",
+      reason: "发送前没有成功读取 Codex 用量，已停止推送以避免污染会话。",
+    };
+  }
   if (record.deliveryState === "pending") {
     return {
       state: "pending",
@@ -342,6 +370,8 @@ function compactThreadTitle(threadId, rawTitle) {
 function statusForJob({ job, state, daemonRunning, eventStatuses }) {
   const done = eventStatuses.find((event) => event.type === "done");
   const failedDelivery = eventStatuses.find((event) => event.triggered && event.delivery?.state === "failed");
+  const usageLimitedDelivery = eventStatuses.find((event) => event.triggered && event.delivery?.state === "usage_limited");
+  const deferredDelivery = eventStatuses.find((event) => event.triggered && event.delivery?.state === "deferred_usage_limit");
   const exceptional = eventStatuses.find((event) => event.triggered && isExceptionalEventType(event.type));
   const lastPollAge = secondsSince(state.lastPollAt);
   const staleAfter = Number(job.intervalSec || 30) * 3 + 90;
@@ -370,6 +400,22 @@ function statusForJob({ job, state, daemonRunning, eventStatuses }) {
     };
   }
 
+  if (usageLimitedDelivery) {
+    return {
+      label: "异常",
+      tone: "bad",
+      detail: usageLimitedDelivery.delivery?.reason || "Codex 用量限制，通知没有送达目标会话。",
+    };
+  }
+
+  if (deferredDelivery) {
+    return {
+      label: "留意",
+      tone: "warn",
+      detail: deferredDelivery.delivery?.reason || "Codex 用量限制，通知会在额度刷新后重试。",
+    };
+  }
+
   if (done?.triggered) {
     if (done.delivery?.state === "replied" || done.delivery?.state === "delivered") {
       return {
@@ -383,6 +429,20 @@ function statusForJob({ job, state, daemonRunning, eventStatuses }) {
         label: "留意",
         tone: "warn",
         detail: "完成消息已发送给 Codex，正在等待 Codex 回复完成。",
+      };
+    }
+    if (done.delivery?.state === "deferred_usage_limit") {
+      return {
+        label: "留意",
+        tone: "warn",
+        detail: done.delivery.reason || "远端任务已结束，Codex 用量刷新后会自动推送完成通知。",
+      };
+    }
+    if (done.delivery?.state === "usage_limited") {
+      return {
+        label: "异常",
+        tone: "bad",
+        detail: done.delivery.reason || "远端任务已结束，但 Codex 当前用量限制，完成通知没有送达。",
       };
     }
     if (done.delivery?.state === "failed") {
@@ -577,13 +637,19 @@ function progressDisplayForJob(job, completed) {
   if (completed) {
     const failedDone = doneEvent?.delivery?.state === "failed";
     const pendingDone = doneEvent?.delivery?.state === "pending";
+    const deferredDone = doneEvent?.delivery?.state === "deferred_usage_limit";
+    const usageLimitedDone = doneEvent?.delivery?.state === "usage_limited";
     return {
-      state: failedDone ? "error" : pendingDone ? "running" : "complete",
-      percent: pendingDone ? 96 : 100,
-      label: failedDone
+      state: failedDone || usageLimitedDone ? "error" : pendingDone || deferredDone ? "running" : "complete",
+      percent: pendingDone || deferredDone ? 96 : 100,
+      label: usageLimitedDone
+        ? "完成，用量受限"
+        : failedDone
         ? "完成，回复失败"
         : pendingDone
           ? "完成，等回复"
+          : deferredDone
+            ? "完成，稍后推送"
           : doneEvent?.delivery?.state === "replied" || doneEvent?.delivery?.state === "delivered"
             ? "完成，已回复"
             : "完成",
@@ -1190,6 +1256,8 @@ function dashboardHtml() {
       if (!event.triggered) return event.label + "待触发";
       if (!event.delivery) return event.label + "已触发";
       if (event.delivery.state === "pending") return event.label + "待回复";
+      if (event.delivery.state === "deferred_usage_limit") return event.label + "稍后推送";
+      if (event.delivery.state === "usage_limited") return event.label + "用量受限";
       if (event.delivery.state === "replied" || event.delivery.state === "delivered") return event.label + "已回复";
       return event.label + "回复失败";
     }
@@ -1220,6 +1288,8 @@ function dashboardHtml() {
       const reason = event?.delivery?.reason || job.status.detail || event?.message || "需要查看本地 monitor 记录。";
       const suggestion = reason.includes("上下文")
         ? "建议压缩目标会话，或降低事件 payload 长度后重试通知。"
+        : reason.includes("用量")
+          ? "等待 Codex 用量刷新后会自动重试；如果超过等待窗口，需要手动重启这次通知。"
         : event?.delivery?.state === "pending"
           ? "建议保持 Codex 打开，等待这轮回复完成；如果长时间不变，可能是 Codex 被关闭或回复被中断。"
         : reason.includes("没有返回")
