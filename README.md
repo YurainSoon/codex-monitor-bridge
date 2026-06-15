@@ -120,6 +120,7 @@ codex-monitor-bridge/
     done.md
   rules/
     rules_with_oom.json
+  CHANGELOG.md
   README.md
   LICENSE
 ```
@@ -549,6 +550,11 @@ Potential community benefits include:
 Contributions are welcome in the form of bug reports, monitor rules, prompt
 templates, dashboard improvements, documentation examples, and portability
 fixes for different shells or remote environments.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history and notable maintenance
+updates.
 
 ## Design Notes
 
